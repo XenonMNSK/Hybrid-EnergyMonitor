@@ -25,8 +25,8 @@
 
 В данном скетче описано подключение 3х модулей PZEM-004T. PZEM1 замеряет потребленную городскую энергию, PZEM2 замеряет общую выдачу с инвертора включая город и солнце, а PZEM3 замеряет полученную энергию от генератора (при его наличии).
 
-![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/raspred-energy.png)
-![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/energy.png)
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/fe1b3b6d9b5a6cd9855f504f3fa57be87d8a8713/images/raspred-energy.png)
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/fe1b3b6d9b5a6cd9855f504f3fa57be87d8a8713/images/energy.png)
 
 ## Настройка
 

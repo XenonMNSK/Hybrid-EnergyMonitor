@@ -25,9 +25,24 @@
 
 В данном скетче описано подключение 3х модулей PZEM-004T. PZEM1 замеряет потребленную городскую энергию, PZEM2 замеряет общую выдачу с инвертора включая город и солнце, а PZEM3 замеряет полученную энергию от генератора (при его наличии).
 
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/raspred-energy.png)
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/energy.png)
+
 ## Настройка
 
-Отдельная настройка не требуется, перед загрузкой скетча на Wemos нужно изменить только данные вашего Wi-Fi и сервера Home Assistant.
+> [!NOTE]
+> Перед загрузкой скетча на Wemos нужно изменить данные вашего Wi-Fi и сервера Home Assistant.
+
+Отдельная настройка не требуется. После того как счетчик подключится к Wi-Fi сети, с помощью Auto Discovery Home Assistant самостоятельно найдет новое устройства в локальной сети через MQTT-брокер без ручного создания сущностей в конфигурационных файлах. Остаётся только зайти в Home Assistant Energy Dashboard и добавить в соответствующие разделы счетчики городской сети, выработки солнечного инвертора и генератора, при его наличиии.
+
+**Добавление сенсора городской сети:**
+
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/add-grid-1.png)
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/add-grid-2.png)
+
+**Добавление сенсора солнечной выработки:**
+
+![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/1a393391cb8337c7c0d81599c9e0e9e2c4cba5ff/images/add-solar.png)
 
 <a id="bugs"></a>
 ## Баги и обратная связь.

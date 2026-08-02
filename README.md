@@ -1,6 +1,6 @@
 # Hybrid-EnergyMonitor для Home Assistant
 
-[![latest](https://img.shields.io/github/v/release/XenonMNSK/Energy-Monitor.svg?color=brightgreen)](https://github.com/XenonMNSK/Energy-Monitor/releases)
+[![latest](https://img.shields.io/github/v/release/XenonMNSK/Hybrid-EnergyMonitor.svg?color=brightgreen)](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/releases)
 [![Home Assistant](https://img.shields.io/badge/HomeAssistant-latest-yellowgreen?style=plastic&logo=homeassistant)](https://github.com/home-assistant/operating-system/releases)
 
 ## Содержание.

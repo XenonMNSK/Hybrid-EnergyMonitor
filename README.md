@@ -10,6 +10,7 @@
 ## Содержание.
 * [**_Описание._**](#description)
 * [**_Возможности._**](#capabilitys)
+* [**_Настройка._**](#settings)
 * [**_Баги и обратная связь._**](#bugs)
 * [**_Лицензия._**](#license)
 
@@ -28,6 +29,7 @@
 ![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/fe1b3b6d9b5a6cd9855f504f3fa57be87d8a8713/images/raspred-energy.png)
 ![image](https://github.com/XenonMNSK/Hybrid-EnergyMonitor/blob/fe1b3b6d9b5a6cd9855f504f3fa57be87d8a8713/images/energy.png)
 
+<a id="settings"></a>
 ## Настройка
 
 > [!NOTE]

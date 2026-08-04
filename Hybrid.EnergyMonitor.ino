@@ -63,9 +63,14 @@ const int MAX_ERROR_COUNT = 3;                   // Максимальное к�
 int errorCount = 0;                              // Счётчик ошибок
 
 // Переменные для расчёта солнечной выработки (pzem2)
-float prev_energy_grid = 0.0;      // энергия из города (pzem1)
-float prev_energy_inv = 0.0;       // энергия с выхода инвертора (pzem2)
-float solar_energy_total = 0.0;    // накопленная «чистая» солнечная энергия (kWh)
+float solar_energy_total = 0.0;     // накопленная «чистая» солнечная энергия (kWh)
+float gen_energy_total = 0.0;       // накопленная энергия от генератора (kWh)
+// Скользящее среднее для солнечной мощности
+const int SMA_SIZE = 8;             // размер окна скользящего среднего: 8 последних замеров
+float solarPowerBuffer[SMA_SIZE];   // буфер для значений мощности
+int smaIndex = 0;                   // индекс текущей позиции в буфере
+bool smaInitialized = false;        // флаг, что буфер уже заполнен хотя бы одним значением
+
 
 void setup() {
   Serial.begin(115200);  // Инициализация Serial‑порта для отладки (скорость 115200 бод)
@@ -120,7 +125,7 @@ void setup() {
   });
   
   // Устанавливаем пароль для OTA: теперь при обновлении потребуется ввести этот пароль
-  ArduinoOTA.setPassword((const char*)"5986237");
+  ArduinoOTA.setPassword((const char*)"PassOTA");
 
   // Запускаем OTA‑сервер: теперь устройство готово принимать обновления по Wi‑Fi
   ArduinoOTA.begin(ota_hostname);
@@ -187,52 +192,84 @@ void loop() {
 
     // Считываем данные со второго устройства PZEM
     data2 = readPZEM(pzem2, "PZEM2");
-    // Публикуем полученные данные в MQTT c уникальным именем "mqttChipID_pzem2"
-    // Для pzem2 дополнительно считаем и публикуем солнечную выработку
-    calculateAndPublishSolar(mqttChipID + "_pzem2", data1.energy, data2.energy, data2.power);
+    // Передаём мощности для расчёта чистой солнечной выработки
+    calculateAndPublishSolar(mqttChipID + "_pzem2", data1.power, data2.power, data3.power);
 
     // Считываем данные с третьего устройства PZEM
     data3 = readPZEM(pzem3, "PZEM3");
     // Публикуем полученные данные в MQTT c уникальным именем "mqttChipID_pzem3"
     publishData(mqttChipID + "_pzem3", data3, false);
+    // Расчёт и публикация выработки генератора
+    publishAndAccumulateGen(mqttChipID + "_pzem3", data3.power);
   }
 }
 
-// Функция расчёта и публикации солнечной выработки (только для pzem2)
-void calculateAndPublishSolar(const String& name, float energy_grid, float energy_inv, float power_inv) {
-  // Защита от NaN и некорректных значений
-  if (isnan(energy_grid) || isnan(energy_inv)) {
+// Функция расчёта и публикации солнечной выработки (со сглаживанием)
+void calculateAndPublishSolar(const String& name, float power_grid, float power_inv, float power_gen) {
+  if (isnan(power_grid) || isnan(power_inv) || isnan(power_gen)) {
     return;
   }
 
-  // Вычисляем дельты (приращения энергии за интервал)
-  float delta_grid = energy_grid - prev_energy_grid;
-  float delta_inv  = energy_inv - prev_energy_inv;
+  // 1. Сырая чистая солнечная мощность
+  float raw_solar_power_w = power_inv - power_grid - power_gen;
 
-  // Ограничиваем отрицательные дельты до 0 (защита от «обратного» счёта)
-  if (delta_grid < 0) delta_grid = 0;
-  if (delta_inv < 0)  delta_inv = 0;
+  // Защита от отрицательных значений из‑за шумов/рассинхрона
+  if (raw_solar_power_w < 0) {
+    raw_solar_power_w = 0;
+  }
 
-  float delta_solar = delta_inv - delta_grid;
-  if (delta_solar < 0) delta_solar = 0; // «чистое солнце» не может быть отрицательным
+  // 2. Скользящее среднее (SMA) для сглаживания
+  // Записываем новое значение в буфер по кругу
+  solarPowerBuffer[smaIndex] = raw_solar_power_w;
+  smaIndex = (smaIndex + 1) % SMA_SIZE;
 
-  solar_energy_total += delta_solar;
+  // Считаем среднее по всему буферу
+  float sum = 0.0;
+  for (int i = 0; i < SMA_SIZE; ++i) {
+    sum += solarPowerBuffer[i];
+  }
+  float smoothed_solar_power_w = sum / SMA_SIZE;
 
-  // Мощность (Вт) = энергия (кВт·ч) * 3600 / время (с)
-  float solar_power_w = (delta_solar * 3600.0f) / (POLL_INTERVAL_MS / 1000.0f);
-  if (solar_power_w < 0) solar_power_w = 0;
+  // После первого полного заполнения буфера считаем, что инициализация прошла
+  if (!smaInitialized && smaIndex == 0) {
+    smaInitialized = true;
+  }
 
-  // Публикуем «чистую» солнечную энергию (kWh) как total_increasing
+  // Если буфер ещё не заполнен (первые циклы), можно использовать просто raw_solar_power_w
+  // или подождать, пока smaInitialized станет true. Здесь используем smoothed всегда,
+  // потому что при старте все ячейки нулевые — это нормально.
+
+  // Публикуем сглаженную мощность
+  String topic_power = mqtt_base_topic + "/" + name + "/solar_power";
+  mqttClient.publish(topic_power.c_str(), String(smoothed_solar_power_w, 1).c_str(), true);
+
+  // 3. Накопление энергии от сглаженной мощности
+  const float interval_hours = POLL_INTERVAL_MS / 3600000.0f;
+  float delta_energy_kwh = (smoothed_solar_power_w / 1000.0f) * interval_hours;
+
+  solar_energy_total += delta_energy_kwh;
+
+  // Чтобы не накапливать микроошибки месяцами, можно добавить мягкую очистку при явных сбоях,
+  // но пока просто публикуем накопленное значение
   String topic_energy = mqtt_base_topic + "/" + name + "/solar_energy";
   mqttClient.publish(topic_energy.c_str(), String(solar_energy_total, 3).c_str(), true);
+}
 
-  // Публикуем солнечную мощность (W) как measurement
-  String topic_power = mqtt_base_topic + "/" + name + "/solar_power";
-  mqttClient.publish(topic_power.c_str(), String(solar_power_w, 1).c_str(), true);
+// Учёт и публикация энергии генератора
+void publishAndAccumulateGen(const String& name, float power_gen) {
+  if (isnan(power_gen)) return;
 
-  // Обновляем предыдущие значения
-  prev_energy_grid = energy_grid;
-  prev_energy_inv  = energy_inv;
+  float safe_power_gen = (power_gen < 0) ? 0 : power_gen;
+
+  String topic_power = mqtt_base_topic + "/" + name + "/gen_power";
+  mqttClient.publish(topic_power.c_str(), String(safe_power_gen, 1).c_str(), true);
+
+  const float interval_hours = POLL_INTERVAL_MS / 3600000.0f;
+  float delta_energy_kwh = (safe_power_gen / 1000.0f) * interval_hours;
+  gen_energy_total += delta_energy_kwh;
+
+  String topic_energy = mqtt_base_topic + "/" + name + "/gen_energy";
+  mqttClient.publish(topic_energy.c_str(), String(gen_energy_total, 3).c_str(), true);
 }
 
 // Функция чтения данных с устройства PZEM с валидацией полученных значений
@@ -263,7 +300,7 @@ PZEMData readPZEM(PZEM004Tv30 &pzem, const String &label) {
   if (isnan(d.pf)) { invalidReasons += "NaN pf, "; isValid = false; }
 
   // Логические проверки границ значений
-  if (d.voltage < 150 || d.voltage > 260) {  // Напряжение: 150–260 В
+  if (d.voltage < 100 || d.voltage > 260) {  // Напряжение: 100–260 В
     invalidReasons += "voltage вне диапазона (" + String(d.voltage) + " V), ";
     isValid = false;
   }
@@ -438,42 +475,77 @@ void publishDiscovery(const String& name, uint8_t addr, bool isSolar) {
     // - payload.c_str() — тело сообщения (JSON)
     // - true — флаг retained: сообщение сохраняется на сервере и доставляется новым подписчикам
     mqttClient.publish(topic.c_str(), payload.c_str(), true);
+    delay(100); // небольшая пауза, чтобы MQTT брокер успевал обрабатывать сообщения
   }
 
-  // --- СПЕЦИАЛЬНЫЕ СЕНСОРЫ ДЛЯ СОЛНЕЧНОЙ ВЕТКИ (только если isSolar == true) ---
-  if (isSolar) {
-    // 1. Сенсор чистой солнечной энергии (solar_energy)
-    String topic_se = mqtt_base_topic + "/sensor/" + name + "_solar_energy/config";
-    String payload_se = "{";
-    payload_se += "\"name\": \"" + mqttChipID + "_pzem" + String(addr) + "_Solar Energy\",";
-    payload_se += "\"state_topic\": \"" + mqtt_base_topic + "/" + name + "/solar_energy\",";
-    payload_se += "\"unit_of_measurement\": \"kWh\",";
-    payload_se += "\"friendly_name\": \"Солнечная энергия_" + String(addr) + "\",";
-    payload_se += "\"device_class\": \"energy\",";
-    payload_se += "\"icon\": \"mdi:solar-panel\",";
-    // Важно: total_increasing — счётчик только растёт, подходит для Energy Dashboard
-    payload_se += "\"state_class\": \"total_increasing\",";
-    payload_se += "\"unique_id\": \"" + name + "_solar_energy\",";
-    // Привязываем к тому же устройству (device), чтобы в HA это был один девайс
-    payload_se += "\"device\": {\"identifiers\": [\"" + name + "\"], \"name\": \"Energy Monitor\", \"model\": \"PZEM004T v3\", \"manufacturer\": \"Xenon\"}";
-    payload_se += "}";
-    mqttClient.publish(topic_se.c_str(), payload_se.c_str(), true);
+  // 2. Discovery для солнечной выработки (только для PZEM2)
+  if (addr == 0x02) {
+    // Сенсор сглаженной солнечной мощности
+    String tp = mqtt_base_topic + "/sensor/" + name + "_solar_power/config";
+    String pl = "{";
+    pl += "\"name\": \"" + mqttChipID + "_pzem2_Solar Power\",";
+    pl += "\"state_topic\": \"" + mqtt_base_topic + "/" + name + "/solar_power\",";
+    pl += "\"unit_of_measurement\": \"W\",";
+    pl += "\"friendly_name\": \"Солнечная мощность (сглаженная)\",";
+    pl += "\"device_class\": \"power\",";
+    pl += "\"icon\": \"mdi:solar-power\",";
+    pl += "\"state_class\": \"measurement\",";
+    pl += "\"unique_id\": \"" + name + "_solar_power\"";
+    pl += ",\"device\": {\"identifiers\": [\"" + name + "\"], \"name\": \"Energy Monitor\", \"model\": \"PZEM004T v3\", \"manufacturer\": \"Xenon\"}";
+    pl += "}";
+    mqttClient.publish(tp.c_str(), pl.c_str(), true);
+    delay(100);
 
-    // 2. Сенсор текущей мощности солнечной выработки (solar_power)
-    String topic_sp = mqtt_base_topic + "/sensor/" + name + "_solar_power/config";
-    String payload_sp = "{";
-    payload_sp += "\"name\": \"" + mqttChipID + "_pzem" + String(addr) + "_Solar Power\",";
-    payload_sp += "\"state_topic\": \"" + mqtt_base_topic + "/" + name + "/solar_power\",";
-    payload_sp += "\"unit_of_measurement\": \"W\",";
-    payload_sp += "\"friendly_name\": \"Солнечная мощность_" + String(addr) + "\",";
-    payload_sp += "\"device_class\": \"power\",";
-    payload_sp += "\"icon\": \"mdi:solar-power\",";
-    // measurement — текущее измерение мощности (Вт), нужно для графиков и статистики
-    payload_sp += "\"state_class\": \"measurement\",";
-    payload_sp += "\"unique_id\": \"" + name + "_solar_power\",";
-    payload_sp += "\"device\": {\"identifiers\": [\"" + name + "\"], \"name\": \"Energy Monitor\", \"model\": \"PZEM004T v3\", \"manufacturer\": \"Xenon\"}";
-    payload_sp += "}";
-    mqttClient.publish(topic_sp.c_str(), payload_sp.c_str(), true);
+    // Сенсор накопленной солнечной энергии
+    tp = mqtt_base_topic + "/sensor/" + name + "_solar_energy/config";
+    pl = "{";
+    pl += "\"name\": \"" + mqttChipID + "_pzem2_Solar Energy\",";
+    pl += "\"state_topic\": \"" + mqtt_base_topic + "/" + name + "/solar_energy\",";
+    pl += "\"unit_of_measurement\": \"kWh\",";
+    pl += "\"friendly_name\": \"Солнечная выработка (накоплено)\",";
+    pl += "\"device_class\": \"energy\",";
+    pl += "\"icon\": \"mdi:solar-panel\",";
+    pl += "\"state_class\": \"total_increasing\",";
+    pl += "\"unique_id\": \"" + name + "_solar_energy\"";
+    pl += ",\"device\": {\"identifiers\": [\"" + name + "\"], \"name\": \"Energy Monitor\", \"model\": \"PZEM004T v3\", \"manufacturer\": \"Xenon\"}";
+    pl += "}";
+    mqttClient.publish(tp.c_str(), pl.c_str(), true);
+    delay(100);
+  }
+
+  // 3. Discovery для генератора (только для PZEM3)
+  if (addr == 0x03) {
+    // Сенсор мощности генератора
+    String tp = mqtt_base_topic + "/sensor/" + name + "_gen_power/config";
+    String pl = "{";
+    pl += "\"name\": \"" + mqttChipID + "_pzem3_Gen Power\",";
+    pl += "\"state_topic\": \"" + mqtt_base_topic + "/" + name + "/gen_power\",";
+    pl += "\"unit_of_measurement\": \"W\",";
+    pl += "\"friendly_name\": \"Мощность генератора\",";
+    pl += "\"device_class\": \"power\",";
+    pl += "\"icon\": \"mdi:generator-stationary\",";
+    pl += "\"state_class\": \"measurement\",";
+    pl += "\"unique_id\": \"" + name + "_gen_power\"";
+    pl += ",\"device\": {\"identifiers\": [\"" + name + "\"], \"name\": \"Energy Monitor\", \"model\": \"PZEM004T v3\", \"manufacturer\": \"Xenon\"}";
+    pl += "}";
+    mqttClient.publish(tp.c_str(), pl.c_str(), true);
+    delay(100);
+
+    // Сенсор энергии генератора
+    tp = mqtt_base_topic + "/sensor/" + name + "_gen_energy/config";
+    pl = "{";
+    pl += "\"name\": \"" + mqttChipID + "_pzem3_Gen Energy\",";
+    pl += "\"state_topic\": \"" + mqtt_base_topic + "/" + name + "/gen_energy\",";
+    pl += "\"unit_of_measurement\": \"kWh\",";
+    pl += "\"friendly_name\": \"Энергия генератора (накоплено)\",";
+    pl += "\"device_class\": \"energy\",";
+    pl += "\"icon\": \"mdi:generator-stationary\",";
+    pl += "\"state_class\": \"total_increasing\",";
+    pl += "\"unique_id\": \"" + name + "_gen_energy\"";
+    pl += ",\"device\": {\"identifiers\": [\"" + name + "\"], \"name\": \"Energy Monitor\", \"model\": \"PZEM004T v3\", \"manufacturer\": \"Xenon\"}";
+    pl += "}";
+    mqttClient.publish(tp.c_str(), pl.c_str(), true);
+    delay(100);
   }
 }
 
@@ -487,8 +559,4 @@ void publishData(const String& name, const PZEMData& d, bool isSolar) {
   mqttClient.publish((baseTopic + "/energy").c_str(), String(d.energy, 3).c_str(), true);        // Энергия (kWh)
   mqttClient.publish((baseTopic + "/frequency").c_str(), String(d.frequency, 1).c_str(), true);  // Частота (Hz)
   mqttClient.publish((baseTopic + "/pf").c_str(), String(d.pf, 2).c_str(), true);                // Коэффициент мощности (power factor)
-
-  if (isSolar) {
-    // Публикация solar_energy и solar_power выполняется в calculateAndPublishSolar
-  }
 }
